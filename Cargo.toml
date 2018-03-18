@@ -1,0 +1,10 @@
+[package]
+name = "backup"
+version = "0.1.0"
+authors = ["Nicolas Silva <nical@fastmail.com>"]
+
+[dependencies]
+clap = "2.31.1"
+toml = "0.4.5"
+serde = "1.0.33"
+serde_derive = "1.0.33"

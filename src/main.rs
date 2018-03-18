@@ -76,6 +76,12 @@ fn main() {
             .value_name("SERVER")
             .takes_value(true)
         )
+        .arg(Arg::with_name("PORT")
+            .short("p")
+            .long("port")
+            .value_name("PORT")
+            .takes_value(true)
+        )
     }
 
     let dbg = matches.is_present("DEBUG");
@@ -100,7 +106,7 @@ fn main() {
 
     if let Some(mut config_file) = File::open(format!("{}/.backup.toml", src_dir)).ok() {
         if verbose {
-            println!(" ** found config file at {}/.backup.toml", src_dir);
+            println!(" ** Found config file at {}/.backup.toml", src_dir);
         }
         let mut buf = Vec::new();
         config_file.read_to_end(&mut buf).expect("Failed to read config file.");
@@ -126,13 +132,13 @@ fn main() {
 
     if let Some(push_cmd) = matches.subcommand_matches("push") {
         cmd = Some(Cmd::Push);
-        get_subcommand_params(push_cmd, &mut user, &mut server, &mut target_dir, &mut src_dir);
+        get_subcommand_params(push_cmd, &mut user, &mut server, &mut target_dir, &mut src_dir, &mut port);
     } else if let Some(sync_cmd) = matches.subcommand_matches("sync") {
         cmd = Some(Cmd::Sync);
-        get_subcommand_params(sync_cmd, &mut user, &mut server, &mut target_dir, &mut src_dir);
+        get_subcommand_params(sync_cmd, &mut user, &mut server, &mut target_dir, &mut src_dir, &mut port);
     } else if let Some(sync_cmd) = matches.subcommand_matches("fetch") {
         cmd = Some(Cmd::Fetch);
-        get_subcommand_params(sync_cmd, &mut user, &mut server, &mut target_dir, &mut src_dir);
+        get_subcommand_params(sync_cmd, &mut user, &mut server, &mut target_dir, &mut src_dir, &mut port);
     }
 
     if cmd.is_none() {
@@ -204,7 +210,8 @@ fn get_subcommand_params(
     user: &mut String,
     server: &mut String,
     target_dir: &mut String,
-    src_dir: &mut String
+    src_dir: &mut String,
+    port: &mut u32,
 ) {
     if let Some(v) = cmd.value_of("USER") {
         *user = v.to_string();
@@ -218,6 +225,10 @@ fn get_subcommand_params(
 
     if let Some(v) = cmd.value_of("SRC") {
         *src_dir = v.to_string();
+    }
+
+    if let Some(v) = cmd.value_of("PORT") {
+        *port = v.parse().unwrap();
     }
 }
 
@@ -249,6 +260,10 @@ fn init(src_dir: &str) -> io::Result<()> {
     }
 
     let address = read_input("Server address: ");
+    let mut port = read_input("port [22]: ");
+    if port == "" {
+        port = "22".to_string();
+    }
     let target_dir = read_input("Target directory on the server: ");
     let user = read_input("User on the server: ");
     let mut default = None;
@@ -281,6 +296,7 @@ fn init(src_dir: &str) -> io::Result<()> {
 
     if let Some(mut config_file) = File::create(path.clone()).ok() {
         writeln!(config_file, "server = \"{}\"", address)?;
+        writeln!(config_file, "port = \"{}\"", port)?;
         writeln!(config_file, "user = \"{}\"", user)?;
         writeln!(config_file, "target_dir = \"{}\"", target_dir)?;
         if let Some(default) = default {

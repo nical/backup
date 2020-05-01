@@ -11,6 +11,53 @@ use std::io::Read;
 use std::io::prelude::*;
 use std::io;
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+enum Cmd {
+    Push,
+    Sync,
+    Fetch,
+}
+
+#[derive(Deserialize)]
+struct Config {
+    server: Option<String>,
+    port: Option<u32>,
+    user: Option<String>,
+    target_dir: Option<String>,
+    default: Option<String>,
+    update_permissions: Option<bool>,
+    update_dir_times: Option<bool>,
+    exclude: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct GlobalConfig {
+    server: Option<String>,
+    port: Option<u32>,
+    user: Option<String>,
+    exclude: Option<Vec<String>>,
+    update_permissions: Option<bool>,
+    update_dir_times: Option<bool>,
+    // List of directories to back up when --all is used.
+    list: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug)]
+struct Params {
+    cmd: Option<Cmd>,
+    ip: String,
+    port: u32,
+    user: String,
+    src_dir: String,
+    target_dir: String,
+    exclude: Vec<String>,
+    all: bool,
+    update_dir_times: bool,
+    update_permissions: bool,
+    verbose: bool,
+    dbg: bool,
+}
+
 fn main() {
     let matches = App::new("Backup tool")
         .version("0.1")
@@ -25,6 +72,11 @@ fn main() {
             .short("d")
             .long("debug")
             .help("Print the commands but do not run them.")
+            .takes_value(false)
+        )
+        .arg(Arg::with_name("ALL")
+            .long("all")
+            .help("Backup all folders listed in the global config file (~/.backup.toml).")
             .takes_value(false)
         )
         .subcommand(
@@ -56,6 +108,10 @@ fn main() {
                 .help("Write the current date into the date file")
                 .takes_value(false)
             )
+        )
+        .subcommand(
+            SubCommand::with_name("info")
+            .about("Print some information about the backed up directory.")
         )
         .get_matches();
 
@@ -94,115 +150,123 @@ fn main() {
         )
     }
 
-    let dbg = matches.is_present("DEBUG");
-    let verbose = matches.is_present("VERBOSE") || dbg;
-    let mut src_dir = ".".to_string();
-    let mut user = "rsync".to_string();
-    let mut server = "".to_string();
-    let mut port = 22;
-    let mut target_dir = "~/backups/default/".to_string();
-    let mut cmd = None;
-    let mut extra_args = String::new();
-    let mut excludes = Vec::new();
+    let mut params = Params {
+        cmd: None,
+        ip: "".to_string(),
+        port: 22,
+        user: "".to_string(),
+        src_dir: ".".to_string(),
+        target_dir: "~/backups/default/".to_string(),
+        exclude: Vec::new(),
+        dbg: matches.is_present("DEBUG"),
+        verbose: matches.is_present("VERBOSE"),
+        all: matches.is_present("ALL"),
+        update_dir_times: false,
+        update_permissions: false,
+    };
+    params.verbose |= params.dbg;
+
 
     if let Some(init_cmd) = matches.subcommand_matches("init") {
         if let Some(v) = init_cmd.value_of("SRC") {
-            src_dir = v.to_string();
+            params.src_dir = v.to_string();
         }
 
-        init(&src_dir).unwrap();
+        init(&params.src_dir).unwrap();
         return;
     }
 
-    if let Some(mut config_file) = File::open(format!("{}/.backup.toml", src_dir)).ok() {
-        if verbose {
-            println!(" ** Found config file at {}/.backup.toml", src_dir);
-        }
-        let mut buf = Vec::new();
-        config_file.read_to_end(&mut buf).expect("Failed to read config file.");
-        let config: Config = toml::from_slice(&buf[..]).unwrap();
+    let global = read_global_config_file(&mut params);
+    get_cmd(&mut params, &matches);
 
-        user = config.user.unwrap_or(user);
-        server = config.server.unwrap_or(server);
-        target_dir = config.target_dir.unwrap_or(target_dir);
-        port = config.port.unwrap_or(port);
-        if let Some(command) = config.default {
-            if command == "push" {
-                cmd = Some(Cmd::Push);
-            }
-            if command == "sync" {
-                cmd = Some(Cmd::Sync);
+    if params.all {
+        if let Some(GlobalConfig { list: Some(directories), .. }) = global {
+            for dir in &directories {
+                if params.verbose {
+                    println!(" **");
+                    println!(" ** {}", dir);
+                }
+
+                let mut params = params.clone();
+                params.src_dir = dir.to_string();
+
+                if let Some(_) = matches.subcommand_matches("info") {
+                    info_command(&params);
+                } else if let Some(when_cmd) = matches.subcommand_matches("when") {
+                    when_command(&params, &when_cmd);
+                } else {
+                    read_config_file(&mut params);
+                    execute(&params);
+                }
             }
         }
 
-        if let Some(e) = config.exclude {
-            excludes = e;
-        }
+        return;
     }
 
-    if let Some(push_cmd) = matches.subcommand_matches("push") {
-        cmd = Some(Cmd::Push);
-        get_subcommand_params(push_cmd, &mut user, &mut server, &mut target_dir, &mut src_dir, &mut port);
-    } else if let Some(sync_cmd) = matches.subcommand_matches("sync") {
-        cmd = Some(Cmd::Sync);
-        get_subcommand_params(sync_cmd, &mut user, &mut server, &mut target_dir, &mut src_dir, &mut port);
-    } else if let Some(sync_cmd) = matches.subcommand_matches("fetch") {
-        cmd = Some(Cmd::Fetch);
-        get_subcommand_params(sync_cmd, &mut user, &mut server, &mut target_dir, &mut src_dir, &mut port);
+    if let Some(_) = matches.subcommand_matches("info") {
+        info_command(&params);
     } else if let Some(when_cmd) = matches.subcommand_matches("when") {
-        if when_cmd.is_present("WRITE") {
-            write_date_file(&src_dir, verbose);
-        } else {
-            if let Some(date) = read_date_file(&src_dir, verbose) {
-                println!("{}", date.to_string());
-            }
-        }
+        when_command(&params, &when_cmd);
+    } else {
+        read_config_file(&mut params);
+        execute(&params);
+    }
+}
+
+fn execute(params: &Params) {
+    let mut extra_args = String::new();
+
+    if params.cmd.is_none() {
+        println!(" No command to run.");
         return;
     }
 
-    if cmd.is_none() {
-        println!("No command to run.");
-        return;
-    }
-
-    let cmd = cmd.unwrap();
+    let cmd = params.cmd.unwrap();
 
     if cmd == Cmd::Fetch {
         unimplemented!();
     }
 
-    if server == "" {
+    if params.ip == "" {
         panic!("Must specify a server.");
     }
 
-    if user == "" {
+    if params.user == "" {
         panic!("Must specify a user.");
     }
 
-    write_date_file(&src_dir, verbose);
+    if !params.dbg {
+        write_date_file(&params.src_dir, params.verbose);
+    }
 
-    if verbose {
+    if params.verbose {
         extra_args += " -v"
     }
 
     let addr = &format!("{}@{}:{}",
-        user,
-        server,
-        target_dir,
+        params.user,
+        params.ip,
+        params.target_dir,
     );
 
-    let ssh_cmd = format!("ssh -p {}", port);
+    let ssh_cmd = format!("ssh -p {}", params.port);
 
     let mut args = vec![
         "-Parz",
         "-e", &ssh_cmd,
-        &src_dir,
+        &params.src_dir,
         addr,
-        "--omit-dir-times",
-        "--no-perms",
     ];
 
-    for e in &excludes {
+    if !params.update_dir_times {
+        args.push("--omit-dir-times");
+    }
+    if !params.update_permissions {
+        args.push("--no-perms")
+    }
+
+    for e in &params.exclude {
         args.push("--exclude");
         args.push(e);
     }
@@ -211,7 +275,7 @@ fn main() {
         args.push("--delete");
     }
 
-    if verbose {
+    if params.verbose {
         println!(" ** command: push");
         args.push("-v");
     }
@@ -219,58 +283,169 @@ fn main() {
     let mut command = Command::new("rsync");
     command.args(args);
 
-    if verbose {
-        println!("{:?}", command);
+    if params.verbose {
+        println!(" ** {:?}", command);
     }
 
-    if !dbg {
+    if !params.dbg {
         let status = command.status().expect("Failed to execute the command.");
         assert!(status.success());
     }
 }
 
-fn get_subcommand_params(
-    cmd: &ArgMatches,
-    user: &mut String,
-    server: &mut String,
-    target_dir: &mut String,
-    src_dir: &mut String,
-    port: &mut u32,
-) {
-    if let Some(v) = cmd.value_of("USER") {
-        *user = v.to_string();
+fn info_command(params: &Params) {
+    if let Some(date) = read_date_file(&params.src_dir, params.verbose) {
+        println!(" - folder: {:?}, last backup: {}", params.src_dir, date.to_string());
+    } else {
+        println!(" - folder: {:?}", params.src_dir);
     }
-    if let Some(v) = cmd.value_of("SERVER") {
-        *server = v.to_string();
+}
+
+fn when_command(params: &Params, when_cmd: &ArgMatches) {
+    if when_cmd.is_present("WRITE") {
+        write_date_file(&params.src_dir, params.verbose);
+    } else {
+        if let Some(date) = read_date_file(&params.src_dir, params.verbose) {
+            println!("{}", date.to_string());
+        }
     }
-    if let Some(v) = cmd.value_of("TARGET") {
-        *target_dir = v.to_string();
+}
+
+fn get_cmd(params: &mut Params, matches: &clap::ArgMatches) {
+    if let Some(push_cmd) = matches.subcommand_matches("push") {
+        params.cmd = Some(Cmd::Push);
+        get_subcommand_params(push_cmd, params);
+    } else if let Some(sync_cmd) = matches.subcommand_matches("sync") {
+        params.cmd = Some(Cmd::Sync);
+        get_subcommand_params(sync_cmd, params);
+    } else if let Some(sync_cmd) = matches.subcommand_matches("fetch") {
+        params.cmd = Some(Cmd::Fetch);
+        get_subcommand_params(sync_cmd, params);
+    }
+}
+
+
+fn read_config_file(params: &mut Params) {
+    let path = format!("{}/.backup.toml", params.src_dir);
+    let mut config_file = match File::open(&path) {
+        Ok(file) => file,
+        Err(..) => {
+            if params.verbose {
+                println!(" ** No local config file ({})", path);
+            }
+            return;
+        }
+    };
+
+    if params.verbose {
+        println!(" ** Found local config file at {}/.backup.toml", params.src_dir);
     }
 
-    if let Some(v) = cmd.value_of("SRC") {
-        *src_dir = v.to_string();
+    let mut buf = Vec::new();
+    config_file.read_to_end(&mut buf).expect("Failed to read config file.");
+    let config: Config = toml::from_slice(&buf[..]).unwrap();
+
+    if let Some(ip) = config.server {
+        params.ip = ip;
+    }
+    if let Some(port) = config.port {
+        params.port = port;
+    }
+    if let Some(user) = config.user {
+        params.user = user;
+    }
+    if let Some(dir) = config.target_dir {
+        params.target_dir = dir;
+    }
+
+    if let Some(update) = config.update_permissions {
+        params.update_permissions = update;
+    }
+
+    if let Some(update) = config.update_dir_times {
+        params.update_dir_times = update;
+    }
+
+    if params.cmd.is_none() {
+        if let Some(command) = config.default {
+            if command == "push" {
+                params.cmd = Some(Cmd::Push);
+            }
+            if command == "sync" {
+                params.cmd = Some(Cmd::Sync);
+            }
+        }
+    }
+
+    if let Some(e) = config.exclude {
+        params.exclude.extend_from_slice(&e);
+    }
+}
+
+fn read_global_config_file(params: &mut Params) -> Option<GlobalConfig> {
+    let mut path = dirs::home_dir()?;
+    path.push(".backup.toml");
+
+    if params.verbose {
+        println!(" ** Looking for global config file at: {:?}", path);
+    }
+
+    let mut config_file = File::open(path).ok()?;
+
+    if params.verbose {
+        println!(" ** Found global config file");
+    }
+    let mut buf = Vec::new();
+    config_file.read_to_end(&mut buf).expect("Failed to read global config file.");
+    let global: GlobalConfig = toml::from_slice(&buf[..]).unwrap();
+
+    if let Some(ref ip) = global.server {
+        params.ip = ip.clone();
+    }
+    if let Some(ref port) = global.port {
+        params.port = port.clone();
+    }
+    if let Some(ref user) = global.user {
+        params.user = user.clone();
+    }
+
+    if let Some(update) = global.update_permissions {
+        params.update_permissions = update;
+    }
+
+    if let Some(update) = global.update_dir_times {
+        params.update_dir_times = update;
+    }
+
+    if let Some(ref e) = global.exclude {
+        params.exclude.extend_from_slice(e);
+    }
+
+    return Some(global);
+}
+
+fn get_subcommand_params(
+    cmd: &ArgMatches,
+    params: &mut Params,
+) {
+    if let Some(v) = cmd.value_of("USER") {
+        params.user = v.to_string();
+    }
+    if let Some(v) = cmd.value_of("SERVER") {
+        params.ip = v.to_string();
+    }
+    if let Some(v) = cmd.value_of("TARGET") {
+        params.target_dir = v.to_string();
     }
 
     if let Some(v) = cmd.value_of("PORT") {
-        *port = v.parse().unwrap();
+        params.port = v.parse().unwrap();
     }
-}
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-enum Cmd {
-    Push,
-    Sync,
-    Fetch,
-}
-
-#[derive(Deserialize)]
-struct Config {
-    server: Option<String>,
-    user: Option<String>,
-    port: Option<u32>,
-    target_dir: Option<String>,
-    default: Option<String>,
-    exclude: Option<Vec<String>>,
+    if let Some(v) = cmd.value_of("SRC") {
+        assert!(!params.all, "Can't specify a source directory when --all is used.");
+        params.src_dir = v.to_string();
+    }
 }
 
 fn init(src_dir: &str) -> io::Result<()> {
@@ -284,10 +459,7 @@ fn init(src_dir: &str) -> io::Result<()> {
     }
 
     let address = read_input("Server address: ");
-    let mut port = read_input("port [22]: ");
-    if port == "" {
-        port = "22".to_string();
-    }
+    let port = read_input("port: ");
     let target_dir = read_input("Target directory on the server: ");
     let user = read_input("User on the server: ");
     let mut default = None;
@@ -309,28 +481,34 @@ fn init(src_dir: &str) -> io::Result<()> {
         }
     } {}
 
-    let mut excludes = Vec::new();
+    let mut exclude = Vec::new();
     while match read_input("Exclude pattern? : ").as_str() {
         "" => { false }
         pat => {
-            excludes.push(pat.to_string());
+            exclude.push(pat.to_string());
             true
         }
     } {}
 
     if let Some(mut config_file) = File::create(path.clone()).ok() {
-        writeln!(config_file, "server = \"{}\"", address)?;
-        writeln!(config_file, "port = {}", port)?;
-        writeln!(config_file, "user = \"{}\"", user)?;
+        if !address.is_empty() {
+            writeln!(config_file, "server = \"{}\"", address)?;
+        }
+        if !port.is_empty() {
+            writeln!(config_file, "port = {}", port)?;
+        }
+        if !user.is_empty() {
+            writeln!(config_file, "user = \"{}\"", user)?;
+        }
         writeln!(config_file, "target_dir = \"{}\"", target_dir)?;
         if let Some(default) = default {
             writeln!(config_file, "default = \"{}\"", default)?;
         }
 
-        if !excludes.is_empty() {
+        if !exclude.is_empty() {
             writeln!(config_file, "exclude = [")?;
-            for (i, pat) in excludes.iter().enumerate() {
-                if i == excludes.len() - 1 {
+            for (i, pat) in exclude.iter().enumerate() {
+                if i == exclude.len() - 1 {
                     writeln!(config_file, "    \"{}\"", pat)?;
                 } else {
                     writeln!(config_file, "    \"{}\",", pat)?;

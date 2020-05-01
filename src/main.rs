@@ -318,7 +318,7 @@ fn init(src_dir: &str) -> io::Result<()> {
 
     if let Some(mut config_file) = File::create(path.clone()).ok() {
         writeln!(config_file, "server = \"{}\"", address)?;
-        writeln!(config_file, "port = \"{}\"", port)?;
+        writeln!(config_file, "port = {}", port)?;
         writeln!(config_file, "user = \"{}\"", user)?;
         writeln!(config_file, "target_dir = \"{}\"", target_dir)?;
         if let Some(default) = default {

@@ -199,6 +199,7 @@ fn main() {
         &src_dir,
         addr,
         "--omit-dir-times",
+        "--no-perms",
     ];
 
     for e in &excludes {

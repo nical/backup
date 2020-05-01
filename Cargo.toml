@@ -2,9 +2,12 @@
 name = "backup"
 version = "0.1.0"
 authors = ["Nicolas Silva <nical@fastmail.com>"]
+license = "MIT/Apache-2.0"
+edition = "2018"
 
 [dependencies]
-clap = "2.31.1"
+clap = "2.33"
 toml = "0.4.5"
 serde = "1.0.33"
 serde_derive = "1.0.33"
+chrono = "0.4"

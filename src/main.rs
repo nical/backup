@@ -47,6 +47,16 @@ fn main() {
                 .takes_value(true)
             )
         )
+        .subcommand(
+            SubCommand::with_name("when")
+            .about("When is the last time folder was backed up.")
+            .arg(Arg::with_name("WRITE")
+                .short("w")
+                .long("write")
+                .help("Write the current date into the date file")
+                .takes_value(false)
+            )
+        )
         .get_matches();
 
     fn params<'a, 'b>(app: App<'a, 'b>) -> App<'a, 'b> {
@@ -139,10 +149,20 @@ fn main() {
     } else if let Some(sync_cmd) = matches.subcommand_matches("fetch") {
         cmd = Some(Cmd::Fetch);
         get_subcommand_params(sync_cmd, &mut user, &mut server, &mut target_dir, &mut src_dir, &mut port);
+    } else if let Some(when_cmd) = matches.subcommand_matches("when") {
+        if when_cmd.is_present("WRITE") {
+            write_date_file(&src_dir, verbose);
+        } else {
+            if let Some(date) = read_date_file(&src_dir, verbose) {
+                println!("{}", date.to_string());
+            }
+        }
+        return;
     }
 
     if cmd.is_none() {
         println!("No command to run.");
+        return;
     }
 
     let cmd = cmd.unwrap();
@@ -158,6 +178,8 @@ fn main() {
     if user == "" {
         panic!("Must specify a user.");
     }
+
+    write_date_file(&src_dir, verbose);
 
     if verbose {
         extra_args += " -v"
@@ -317,4 +339,49 @@ fn init(src_dir: &str) -> io::Result<()> {
     }
 
     Ok(())
+}
+
+type DateTime = chrono::DateTime<chrono::Local>;
+
+fn date_path(src_dir: &str) -> String {
+    format!("{}/.backup_time.txt", src_dir)
+}
+
+fn read_date_file(src_dir: &str, verbose: bool) -> Option<DateTime> {
+    let path = date_path(src_dir);
+    let date_str = match std::fs::read_to_string(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            if verbose {
+                println!(" ** No date file: {:?}", e);
+            }
+            return None;
+        }
+    };
+
+    if verbose {
+        println!(" ** Found date file {}", path);
+        println!(" ** {}", date_str);
+    }
+
+    let date = match date_str.parse::<DateTime>() {
+        Ok(date) => date,
+        Err(e) => {
+            println!(" ** Failed to parse date {}", e);
+            return None;
+        }
+    };
+
+    Some(date)
+}
+
+fn write_date_file(src_dir: &str, verbose: bool) {
+    let path = date_path(src_dir);
+    if let Some(mut date_file) = File::create(&path).ok() {
+        let date_str = chrono::Local::now().to_string();
+        writeln!(date_file, "{}", date_str).unwrap();
+        if verbose {
+            println!("Updated date file: {}", date_str);
+        }
+    }
 }

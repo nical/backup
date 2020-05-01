@@ -198,6 +198,7 @@ fn main() {
         "-e", &ssh_cmd,
         &src_dir,
         addr,
+        "--omit-dir-times",
     ];
 
     for e in &excludes {
@@ -325,12 +326,14 @@ fn init(src_dir: &str) -> io::Result<()> {
             writeln!(config_file, "default = \"{}\"", default)?;
         }
 
-        writeln!(config_file, "exclude = [")?;
-        for (i, pat) in excludes.iter().enumerate() {
-            if i == excludes.len() - 1 {
-                writeln!(config_file, "    \"{}\"", pat)?;
-            } else {
-                writeln!(config_file, "    \"{}\",", pat)?;
+        if !excludes.is_empty() {
+            writeln!(config_file, "exclude = [")?;
+            for (i, pat) in excludes.iter().enumerate() {
+                if i == excludes.len() - 1 {
+                    writeln!(config_file, "    \"{}\"", pat)?;
+                } else {
+                    writeln!(config_file, "    \"{}\",", pat)?;
+                }
             }
         }
         writeln!(config_file, "]")?;
@@ -381,7 +384,7 @@ fn write_date_file(src_dir: &str, verbose: bool) {
         let date_str = chrono::Local::now().to_string();
         writeln!(date_file, "{}", date_str).unwrap();
         if verbose {
-            println!("Updated date file: {}", date_str);
+            println!(" ** Updated date file: {}", date_str);
         }
     }
 }
